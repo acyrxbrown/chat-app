@@ -46,6 +46,28 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
+-- AI message topics (for highlights and clustering)
+CREATE TABLE IF NOT EXISTS message_topics (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  message_id UUID REFERENCES messages(id) ON DELETE CASCADE NOT NULL,
+  chat_id UUID REFERENCES chats(id) ON DELETE CASCADE NOT NULL,
+  topic TEXT NOT NULL CHECK (topic IN ('football', 'food', 'gaming', 'event', 'random')),
+  is_plan BOOLEAN DEFAULT FALSE,
+  plan_summary TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
+-- AI channel / subgroup suggestions
+CREATE TABLE IF NOT EXISTS channel_suggestions (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  chat_id UUID REFERENCES chats(id) ON DELETE CASCADE NOT NULL,
+  topic TEXT NOT NULL,
+  suggestion_type TEXT NOT NULL CHECK (suggestion_type IN ('topic', 'plan', 'subgroup')),
+  message_count INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'ignored')),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
 -- Create notifications table
 CREATE TABLE IF NOT EXISTS notifications (
   id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
@@ -66,6 +88,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to);
 CREATE INDEX IF NOT EXISTS idx_messages_deleted_at ON messages(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_message_topics_chat_id ON message_topics(chat_id);
+CREATE INDEX IF NOT EXISTS idx_message_topics_topic ON message_topics(topic);
+CREATE INDEX IF NOT EXISTS idx_channel_suggestions_chat_id ON channel_suggestions(chat_id);
+CREATE INDEX IF NOT EXISTS idx_channel_suggestions_status ON channel_suggestions(status);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);
 
@@ -138,6 +164,48 @@ CREATE POLICY "Users can view messages in their chats"
     EXISTS (
       SELECT 1 FROM chat_participants
       WHERE chat_participants.chat_id = messages.chat_id
+      AND chat_participants.user_id = auth.uid()
+    )
+  );
+
+-- Message topics policies
+CREATE POLICY "Users can view message topics in their chats"
+  ON message_topics FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM chat_participants
+      WHERE chat_participants.chat_id = message_topics.chat_id
+      AND chat_participants.user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can insert message topics for their chats"
+  ON message_topics FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM chat_participants
+      WHERE chat_participants.chat_id = message_topics.chat_id
+      AND chat_participants.user_id = auth.uid()
+    )
+  );
+
+-- Channel suggestions policies
+CREATE POLICY "Users can view channel suggestions in their chats"
+  ON channel_suggestions FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM chat_participants
+      WHERE chat_participants.chat_id = channel_suggestions.chat_id
+      AND chat_participants.user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can update channel suggestions in their chats"
+  ON channel_suggestions FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM chat_participants
+      WHERE chat_participants.chat_id = channel_suggestions.chat_id
       AND chat_participants.user_id = auth.uid()
     )
   );

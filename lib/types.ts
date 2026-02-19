@@ -57,3 +57,23 @@ export interface ChatWithParticipants extends Chat {
   participants: ChatParticipant[]
   last_message?: Message
 }
+
+export interface MessageTopic {
+  id: string
+  message_id: string
+  chat_id: string
+  topic: 'football' | 'food' | 'gaming' | 'event' | 'random'
+  is_plan: boolean
+  plan_summary?: string | null
+  created_at: string
+}
+
+export interface ChannelSuggestion {
+  id: string
+  chat_id: string
+  topic: string
+  suggestion_type: 'topic' | 'plan' | 'subgroup'
+  message_count: number
+  status: 'pending' | 'accepted' | 'ignored'
+  created_at: string
+}

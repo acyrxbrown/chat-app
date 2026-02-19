@@ -6,6 +6,7 @@ import { ChatWithParticipants } from '@/lib/types'
 import CreateChatModal from './CreateChatModal'
 import { ASSISTANT_CHAT_ID } from './AssistantChatPanel'
 import { format, formatDistanceToNow } from 'date-fns'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 export { ASSISTANT_CHAT_ID }
 
@@ -16,7 +17,7 @@ interface ChatListProps {
 }
 
 export default function ChatList({ userId, onSelectChat, selectedChat }: ChatListProps) {
-  const [chats, setChats] = useState<ChatWithParticipants[]>([])
+  const queryClient = useQueryClient()
   const [loading, setLoading] = useState(true)
   const [showCreateModal, setShowCreateModal] = useState(false)
 
@@ -88,16 +89,26 @@ export default function ChatList({ userId, onSelectChat, selectedChat }: ChatLis
         })
       )
 
-      setChats(chatsWithParticipants)
+      return chatsWithParticipants
     } catch (error) {
       console.error('Error fetching chats:', error)
+      return []
     } finally {
       setLoading(false)
     }
   }
 
+  const { data: chats = [] } = useQuery<ChatWithParticipants[]>({
+    queryKey: ['chats', userId],
+    queryFn: fetchChats,
+    enabled: !!userId,
+  })
+
   useEffect(() => {
-    fetchChats()
+    if (!userId) return
+    fetchChats().then((data) => {
+      queryClient.setQueryData(['chats', userId], data)
+    })
 
     // Subscribe to chat updates
     const chatSubscription = supabase
@@ -110,7 +121,9 @@ export default function ChatList({ userId, onSelectChat, selectedChat }: ChatLis
           table: 'chats',
         },
         () => {
-          fetchChats()
+          fetchChats().then((data) => {
+            queryClient.setQueryData(['chats', userId], data)
+          })
         }
       )
       .subscribe()
@@ -127,7 +140,9 @@ export default function ChatList({ userId, onSelectChat, selectedChat }: ChatLis
           filter: `user_id=eq.${userId}`,
         },
         () => {
-          fetchChats()
+          fetchChats().then((data) => {
+            queryClient.setQueryData(['chats', userId], data)
+          })
         }
       )
       .subscribe()
@@ -136,7 +151,7 @@ export default function ChatList({ userId, onSelectChat, selectedChat }: ChatLis
       supabase.removeChannel(chatSubscription)
       supabase.removeChannel(participantSubscription)
     }
-  }, [userId])
+  }, [userId, queryClient])
 
   const getChatDisplayName = (chat: ChatWithParticipants) => {
     if (chat.type === 'group' && chat.name) {
@@ -289,7 +304,9 @@ export default function ChatList({ userId, onSelectChat, selectedChat }: ChatLis
           onChatCreated={(chatId) => {
             setShowCreateModal(false)
             onSelectChat(chatId)
-            fetchChats()
+            fetchChats().then((data) => {
+              queryClient.setQueryData(['chats', userId], data)
+            })
           }}
         />
       )}

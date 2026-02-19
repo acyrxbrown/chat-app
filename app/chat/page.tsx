@@ -58,16 +58,39 @@ export default function ChatPage() {
     return () => subscription.unsubscribe()
   }, [router])
 
-  // Open assistant when ?assistant=1 in URL (e.g. from sidebar AI button)
   useEffect(() => {
-    if (searchParams.get('assistant') === '1' && user?.id) {
+    const idParam = searchParams.get('id')
+    const assistantParam = searchParams.get('assistant')
+
+    if (idParam) {
+      setSelectedChat(idParam)
+    } else if (assistantParam === '1') {
+      // Backwards compatibility for older links using ?assistant=1
       setSelectedChat(ASSISTANT_CHAT_ID)
+    } else {
+      setSelectedChat(null)
     }
-  }, [searchParams, user?.id])
+  }, [searchParams])
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
     router.push('/')
+  }
+
+  const handleSelectChat = (chatId: string) => {
+    setSelectedChat(chatId)
+
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete('assistant')
+
+    if (chatId) {
+      params.set('id', chatId)
+    } else {
+      params.delete('id')
+    }
+
+    const query = params.toString()
+    router.push(query ? `/chat?${query}` : '/chat')
   }
 
   if (loading) {
@@ -99,7 +122,7 @@ export default function ChatPage() {
           </svg>
         </button>
         <button
-          onClick={() => router.push('/chat?assistant=1')}
+          onClick={() => router.push(`/chat?id=${ASSISTANT_CHAT_ID}`)}
           className="p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
           title="Assistant"
         >
@@ -166,7 +189,7 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
-        <ChatList userId={user?.id} onSelectChat={setSelectedChat} selectedChat={selectedChat} />
+        <ChatList userId={user?.id} onSelectChat={handleSelectChat} selectedChat={selectedChat} />
       </div>
 
       {/* Main Chat Area */}

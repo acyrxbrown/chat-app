@@ -12,6 +12,9 @@ import StickerPicker from './StickerPicker'
 import { uploadFile, getFileType } from '@/lib/storage'
 import { requestNotificationPermission } from '@/lib/notifications'
 import { detectAITag, extractAIPrompt, getAIResponse } from '@/lib/ai'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { storeMessageTopicAndMaybeSuggestChannel } from '@/lib/aiHighlights'
+import AIHighlightsPanel from './AIHighlightsPanel'
 
 const ASSISTANT_EMAIL = 'assistant@ai.local'
 
@@ -22,13 +25,10 @@ interface ChatWindowProps {
 }
 
 export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindowProps) {
-  const [messages, setMessages] = useState<Message[]>([])
-  const [chat, setChat] = useState<Chat | null>(null)
   const [otherParticipant, setOtherParticipant] = useState<Profile | null>(null)
   const [participantsCount, setParticipantsCount] = useState(0)
   const [newMessage, setNewMessage] = useState('')
   const [replyingTo, setReplyingTo] = useState<Message | null>(null)
-  const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
   const [showAddParticipants, setShowAddParticipants] = useState(false)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
@@ -36,17 +36,20 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
   const [showStickerPicker, setShowStickerPicker] = useState(false)
   const [uploadingFile, setUploadingFile] = useState(false)
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null)
+  const [threadRoot, setThreadRoot] = useState<Message | null>(null)
+  const [threadMessages, setThreadMessages] = useState<Array<{ message: Message; depth: number }>>(
+    []
+  )
+  const [aiAllowed, setAiAllowed] = useState(false)
+  const [showAiPanel, setShowAiPanel] = useState(false)
+  const [aiQuestion, setAiQuestion] = useState('')
+  const [aiAnswer, setAiAnswer] = useState<string | null>(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }
-
-  useEffect(() => {
-    scrollToBottom()
-  }, [messages])
+  const queryClient = useQueryClient()
 
   const fetchChat = async () => {
     try {
@@ -57,7 +60,6 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
         .single()
 
       if (error) throw error
-      setChat(data)
 
       // Get participants
       const { data: participants } = await supabase
@@ -79,8 +81,11 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
           setOtherParticipant(profile || null)
         }
       }
+
+      return data
     } catch (error) {
       console.error('Error fetching chat:', error)
+      return null
     }
   }
 
@@ -126,26 +131,50 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
         }
       })
 
-      setMessages(messagesWithData)
+      return messagesWithData
     } catch (error) {
       console.error('Error fetching messages:', error)
-      setMessages([])
-    } finally {
-      setLoading(false)
+      return []
     }
   }
 
+  const { data: chat = null } = useQuery<Chat | null>({
+    queryKey: ['chat', chatId],
+    queryFn: fetchChat,
+    enabled: !!chatId,
+    staleTime: 1000 * 30,
+  })
+
+  const {
+    data: messages = [],
+    isLoading: messagesLoading,
+  } = useQuery<Message[]>({
+    queryKey: ['messages', chatId],
+    queryFn: fetchMessages,
+    enabled: !!chatId,
+  })
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  useEffect(() => {
+    scrollToBottom()
+  }, [messages])
+
   useEffect(() => {
     if (!chatId) return
-
-    setLoading(true)
-    setMessages([])
-    setChat(null)
-    setOtherParticipant(null)
-
-    fetchChat()
-    fetchMessages()
     requestNotificationPermission()
+
+    if (typeof window !== 'undefined') {
+      const stored = window.localStorage.getItem(`chat_ai_allowed_${chatId}`)
+      setAiAllowed(stored === '1')
+    }
+  }, [chatId])
+
+  useEffect(() => {
+    if (!chatId) return
+    setOtherParticipant(null)
 
     // Subscribe to new messages
     const messageSubscription = supabase
@@ -185,13 +214,13 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
               }
             : undefined
 
-          setMessages((prev) => [
+          queryClient.setQueryData<Message[]>(['messages', chatId], (prev = []) => [
             ...prev,
             {
               ...newMsg,
               sender: sender.data || undefined,
               replied_to_message: repliedToMessage,
-            },
+            } as any,
           ])
         }
       )
@@ -207,11 +236,15 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
           const updatedMsg = payload.new as Message
           if (updatedMsg.deleted_at) {
             // Remove deleted message from UI
-            setMessages((prev) => prev.filter((msg) => msg.id !== updatedMsg.id))
+            queryClient.setQueryData<Message[]>(['messages', chatId], (prev = []) =>
+              prev.filter((msg) => msg.id !== updatedMsg.id)
+            )
           } else {
             // Update message in UI
-            setMessages((prev) =>
-              prev.map((msg) => (msg.id === updatedMsg.id ? { ...msg, ...updatedMsg } : msg))
+            queryClient.setQueryData<Message[]>(['messages', chatId], (prev = []) =>
+              prev.map((msg) =>
+                msg.id === updatedMsg.id ? ({ ...msg, ...updatedMsg } as any) : msg
+              )
             )
           }
         }
@@ -221,7 +254,65 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
     return () => {
       supabase.removeChannel(messageSubscription)
     }
-  }, [chatId])
+  }, [chatId, queryClient])
+
+  const handleToggleAiAllowed = () => {
+    const next = !aiAllowed
+    setAiAllowed(next)
+    setAiError(null)
+    if (typeof window !== 'undefined') {
+      if (next) {
+        window.localStorage.setItem(`chat_ai_allowed_${chatId}`, '1')
+      } else {
+        window.localStorage.removeItem(`chat_ai_allowed_${chatId}`)
+      }
+    }
+  }
+
+  const handleAskAi = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!aiAllowed) {
+      setAiError('Enable AI access to this chat first.')
+      return
+    }
+    if (!aiQuestion.trim()) return
+
+    setAiLoading(true)
+    setAiError(null)
+    setAiAnswer(null)
+    try {
+      const recent = messages.slice(-50)
+      const chatHistory = recent.map((m) => ({
+        role: m.sender_id === userId ? 'user' : 'assistant',
+        content: `${m.sender_id === userId ? 'You' : 'Other'}: ${m.content}`,
+      }))
+
+      let profileContext = ''
+      if (chat?.type === 'direct' && otherParticipant) {
+        profileContext = `\n\nOther participant profile (from your app database):\n` +
+          `Name: ${otherParticipant.full_name || 'Unknown'}\n` +
+          `Email: ${otherParticipant.email || 'Unknown'}`
+      }
+
+      const systemPrompt =
+        'You are analyzing a private chat conversation from a messaging app. ' +
+        'You may read both the user messages and the other participant messages in this chat, ' +
+        'and you may also use the basic profile fields provided (like name and email). ' +
+        'Answer questions about what happened in the chat, what this other person seems to want or say, ' +
+        "and summarize decisions or action items, but don't invent personal data that is not present."
+
+      const answer = await getAIResponse(
+        `${systemPrompt}\n\nUser question: ${aiQuestion}${profileContext}`,
+        chatHistory
+      )
+      setAiAnswer(answer)
+    } catch (err) {
+      console.error('Error asking AI about chat:', err)
+      setAiError('Failed to get AI answer. Please try again.')
+    } finally {
+      setAiLoading(false)
+    }
+  }
 
   const handleSendMessage = async (e?: React.FormEvent, messageType: Message['message_type'] = 'text', fileData?: { url: string; name: string; size: number; type: string }) => {
     e?.preventDefault()
@@ -247,7 +338,11 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
         messageData.file_type = fileData.type
       }
 
-      const { error } = await supabase.from('messages').insert(messageData)
+      const { data: inserted, error } = await supabase
+        .from('messages')
+        .insert(messageData)
+        .select('*')
+        .single()
 
       if (error) throw error
 
@@ -262,6 +357,18 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
       setShowEmojiPicker(false)
       setShowGifPicker(false)
       setShowStickerPicker(false)
+
+      if (inserted) {
+        queryClient.setQueryData<Message[]>(['messages', chatId], (prev = []) => [
+          ...prev,
+          inserted as any,
+        ])
+
+        // Fire-and-forget AI topic analysis for highlights
+        storeMessageTopicAndMaybeSuggestChannel(inserted as any, chatId).catch((err) =>
+          console.error('Error storing message topic:', err)
+        )
+      }
 
       // If message contains @assistant tag, get AI response
       if (isAITagged) {
@@ -324,7 +431,7 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
   }
 
   const handleFileUpload = async (file: File) => {
-    setUploadingFile(true)
+      setUploadingFile(true)
     try {
       const uploadResult = await uploadFile(file, chatId, userId)
       if (!uploadResult) {
@@ -360,8 +467,9 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
 
       if (error) throw error
 
-      // Remove from UI immediately
-      setMessages((prev) => prev.filter((msg) => msg.id !== messageId))
+      queryClient.setQueryData<Message[]>(['messages', chatId], (prev = []) =>
+        prev.filter((msg) => msg.id !== messageId)
+      )
     } catch (error) {
       console.error('Error deleting message:', error)
       alert('Failed to delete message')
@@ -408,7 +516,45 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
     return !isSameDay(new Date(currentMessage.created_at), new Date(previousMessage.created_at))
   }
 
-  if (loading) {
+  const replyCounts: Record<string, number> = {}
+  messages.forEach((m: any) => {
+    if (m.reply_to) {
+      replyCounts[m.reply_to] = (replyCounts[m.reply_to] || 0) + 1
+    }
+  })
+
+  const openThread = (rootMessage: Message) => {
+    const childrenMap: Record<string, Message[]> = {}
+    messages.forEach((m: any) => {
+      if (m.reply_to) {
+        if (!childrenMap[m.reply_to]) {
+          childrenMap[m.reply_to] = []
+        }
+        childrenMap[m.reply_to].push(m)
+      }
+    })
+
+    const orderedThread: Array<{ message: Message; depth: number }> = []
+
+    const walk = (msg: Message, depth: number) => {
+      orderedThread.push({ message: msg, depth })
+      const children = (childrenMap[msg.id] || []).slice().sort((a, b) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      )
+      children.forEach((child) => walk(child as Message, depth + 1))
+    }
+
+    walk(rootMessage, 0)
+    setThreadRoot(rootMessage)
+    setThreadMessages(orderedThread)
+    setShowEmojiPicker(false)
+    setShowGifPicker(false)
+    setShowStickerPicker(false)
+  }
+
+  const chatLoading = !chat && !!chatId
+
+  if (chatLoading && messagesLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="text-gray-500">Loading chat...</div>
@@ -486,6 +632,24 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
               </svg>
             </button>
           )}
+          <div className="flex items-center space-x-2">
+            <label className="flex items-center space-x-1 text-xs text-gray-500 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={aiAllowed}
+                onChange={handleToggleAiAllowed}
+                className="h-3 w-3"
+              />
+              <span>Allow AI to read chat</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => setShowAiPanel((v) => !v)}
+              className="px-2 py-1 text-xs rounded-full bg-blue-500 text-white hover:bg-blue-600"
+            >
+              Ask AI
+            </button>
+          </div>
           <button 
             onClick={onShowProfile}
             className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full"
@@ -650,17 +814,39 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
                           )}
                         </p>
                       )}
-                       <div className={`flex items-center justify-end space-x-1 mt-1 ${
-                         isOwn ? 'text-blue-100' : isAI ? 'text-purple-100' : 'text-gray-500'
-                       }`}>
-                         <span className="text-xs">
-                           {format(new Date(message.created_at), 'h:mm a')}
-                         </span>
-                         {isOwn && (
-                           <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                             <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                           </svg>
-                         )}
+                       <div className="mt-1 flex items-center justify-between space-x-2">
+                         <div className="flex-1">
+                           {replyCounts[message.id] > 0 && (
+                             <button
+                               type="button"
+                               onClick={() => openThread(message)}
+                               className={`text-[11px] px-2 py-0.5 rounded-full bg-black bg-opacity-10 hover:bg-opacity-20 ${
+                                 isOwn ? 'text-blue-50' : isAI ? 'text-purple-100' : 'text-gray-600'
+                               }`}
+                             >
+                               {replyCounts[message.id]}{' '}
+                               {replyCounts[message.id] === 1 ? 'reply' : 'replies'}
+                             </button>
+                           )}
+                         </div>
+                         <div
+                           className={`flex items-center justify-end space-x-1 ${
+                             isOwn ? 'text-blue-100' : isAI ? 'text-purple-100' : 'text-gray-500'
+                           }`}
+                         >
+                           <span className="text-xs">
+                             {format(new Date(message.created_at), 'h:mm a')}
+                           </span>
+                           {isOwn && (
+                             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                               <path
+                                 fillRule="evenodd"
+                                 d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                                 clipRule="evenodd"
+                               />
+                             </svg>
+                           )}
+                         </div>
                        </div>
                     </div>
                     
@@ -816,6 +1002,150 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
           chatId={chatId}
           onClose={() => setShowAddParticipants(false)}
         />
+      )}
+
+      {threadRoot && threadMessages.length > 0 && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-xl w-full max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white truncate">
+                Thread
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setThreadRoot(null)
+                  setThreadMessages([])
+                }}
+                className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                <svg
+                  className="w-4 h-4 text-gray-600 dark:text-gray-300"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+              {threadMessages.map(({ message, depth }) => {
+                const isOwn = message.sender_id === userId
+                const isAI = message.sender?.email === ASSISTANT_EMAIL
+                return (
+                  <div
+                    key={message.id}
+                    className="flex"
+                    style={{ paddingLeft: `${depth * 1.5}rem` }}
+                  >
+                    <div
+                      className={`max-w-full px-3 py-2 rounded-lg ${
+                        isOwn
+                          ? 'bg-blue-500 text-white'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white'
+                      }`}
+                    >
+                      {message.sender && (
+                        <p className="text-[11px] mb-0.5 opacity-80">
+                          {message.sender.full_name || message.sender.email || 'Unknown'}
+                        </p>
+                      )}
+                      <p className="text-sm whitespace-pre-wrap break-words">
+                        {message.content}
+                      </p>
+                      <p
+                        className={`mt-1 text-[11px] ${
+                          isOwn ? 'text-blue-100' : isAI ? 'text-purple-100' : 'text-gray-500'
+                        }`}
+                      >
+                        {format(new Date(message.created_at), 'h:mm a')}
+                      </p>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAiPanel && (
+        <div className="fixed bottom-4 right-4 z-30 w-full max-w-sm">
+          <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700">
+              <div>
+                <p className="text-xs font-semibold text-gray-800 dark:text-gray-100">
+                  Chat AI (Gemini)
+                </p>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                  Ask about what happened in this chat
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAiPanel(false)}
+                className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                <svg
+                  className="w-3 h-3 text-gray-600 dark:text-gray-300"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+            <form onSubmit={handleAskAi} className="px-3 py-2 space-y-2">
+              <textarea
+                value={aiQuestion}
+                onChange={(e) => setAiQuestion(e.target.value)}
+                rows={2}
+                className="w-full text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                placeholder={
+                  aiAllowed
+                    ? 'e.g. Summarize this chat, what did we decide?'
+                    : 'Enable AI access above to ask questions'
+                }
+              />
+              {aiError && (
+                <p className="text-[11px] text-red-500">
+                  {aiError}
+                </p>
+              )}
+              {aiAnswer && (
+                <div className="max-h-32 overflow-y-auto text-[11px] text-gray-800 dark:text-gray-100 bg-gray-50 dark:bg-gray-800 rounded px-2 py-1">
+                  {aiAnswer}
+                </div>
+              )}
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={aiLoading || !aiQuestion.trim()}
+                  className="px-3 py-1 text-xs rounded-full bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {aiLoading ? 'Asking...' : 'Ask'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* AI Highlights: trending topics & suggestions */}
+      {chatId && (
+        <AIHighlightsPanel chatId={chatId} />
       )}
     </div>
   )
