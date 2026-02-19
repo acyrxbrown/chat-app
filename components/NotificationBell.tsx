@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import { Notification } from '@/lib/types'
+import type { Notification } from '@/lib/types'
 import { fetchNotifications, markAllNotificationsAsRead, subscribeToNotifications, showBrowserNotification } from '@/lib/notifications'
 
 export default function NotificationBell() {

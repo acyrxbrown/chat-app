@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import { Notification } from './types'
+import type { Notification } from './types'
 
 export async function requestNotificationPermission() {
   if (typeof window === 'undefined') return

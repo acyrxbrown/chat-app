@@ -1,10 +1,12 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import ChatList from '@/components/ChatList'
 import ChatWindow from '@/components/ChatWindow'
+import AssistantChatPanel from '@/components/AssistantChatPanel'
+import { ASSISTANT_CHAT_ID } from '@/components/AssistantChatPanel'
 import UserProfilePanel from '@/components/UserProfilePanel'
 import NotificationBell from '@/components/NotificationBell'
 import ThemeToggle from '@/components/ThemeToggle'
@@ -16,6 +18,7 @@ export default function ChatPage() {
   const [showProfilePanel, setShowProfilePanel] = useState(false)
   const [loading, setLoading] = useState(true)
   const router = useRouter()
+  const searchParams = useSearchParams()
 
   useEffect(() => {
     // Check if user is logged in
@@ -55,6 +58,13 @@ export default function ChatPage() {
     return () => subscription.unsubscribe()
   }, [router])
 
+  // Open assistant when ?assistant=1 in URL (e.g. from sidebar AI button)
+  useEffect(() => {
+    if (searchParams.get('assistant') === '1' && user?.id) {
+      setSelectedChat(ASSISTANT_CHAT_ID)
+    }
+  }, [searchParams, user?.id])
+
   const handleLogout = async () => {
     await supabase.auth.signOut()
     router.push('/')
@@ -89,8 +99,9 @@ export default function ChatPage() {
           </svg>
         </button>
         <button
-          onClick={() => router.push('/ai')}
+          onClick={() => router.push('/chat?assistant=1')}
           className="p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          title="Assistant"
         >
           <svg className="w-6 h-6 text-gray-600 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
@@ -160,7 +171,9 @@ export default function ChatPage() {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex">
-        {selectedChat ? (
+        {selectedChat === ASSISTANT_CHAT_ID ? (
+          <AssistantChatPanel userId={user?.id ?? ''} />
+        ) : selectedChat ? (
           <ChatWindow 
             chatId={selectedChat} 
             userId={user?.id} 
@@ -176,8 +189,8 @@ export default function ChatPage() {
         )}
       </div>
 
-      {/* User Profile Panel */}
-      {showProfilePanel && selectedChat && (
+      {/* User Profile Panel - only for real chats, not assistant */}
+      {showProfilePanel && selectedChat && selectedChat !== ASSISTANT_CHAT_ID && (
         <UserProfilePanel 
           chatId={selectedChat}
           userId={user?.id}

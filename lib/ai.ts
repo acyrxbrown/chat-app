@@ -10,7 +10,7 @@ export async function getAIResponse(prompt: string, chatHistory?: Array<{ role: 
     }
 
     // Use Gemini 2.5 Flash model
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
 
     // Build conversation history
     const history = chatHistory || []
@@ -51,11 +51,12 @@ export async function getAIResponse(prompt: string, chatHistory?: Array<{ role: 
 
 export function detectAITag(message: string): boolean {
   // Check if message contains @assistant tag
-  const aiTagPattern = /@assistant\s+/i
+  // Match @assistant anywhere in the message, with or without trailing space/punctuation
+  const aiTagPattern = /@assistant\b/i
   return aiTagPattern.test(message)
 }
 
 export function extractAIPrompt(message: string): string {
   // Remove @assistant tag and return the prompt
-  return message.replace(/@assistant\s+/i, '').trim()
+  return message.replace(/@assistant\b[:;,]?\s*/i, '').trim()
 }

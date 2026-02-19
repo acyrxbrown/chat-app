@@ -13,6 +13,8 @@ import { uploadFile, getFileType } from '@/lib/storage'
 import { requestNotificationPermission } from '@/lib/notifications'
 import { detectAITag, extractAIPrompt, getAIResponse } from '@/lib/ai'
 
+const ASSISTANT_EMAIL = 'assistant@ai.local'
+
 interface ChatWindowProps {
   chatId: string
   userId: string
@@ -84,61 +86,63 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
 
   const fetchMessages = async () => {
     try {
+      // Fetch messages (simple select avoids FK/relation issues with profiles)
       const { data: messagesData, error } = await supabase
         .from('messages')
         .select('*')
         .eq('chat_id', chatId)
-        .is('deleted_at', null) // Only fetch non-deleted messages
-        .order('created_at', { ascending: true })
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false })
+        .limit(200)
 
       if (error) throw error
 
-      // Fetch sender profiles and replied-to messages
-      const messagesWithData = await Promise.all(
-        (messagesData || []).map(async (message) => {
-          const isAI = message.sender_id === 'ai-assistant-00000000-0000-0000-0000-000000000000'
-          
-          const [sender, repliedTo] = await Promise.all([
-            isAI
-              ? Promise.resolve({ data: { id: message.sender_id, full_name: 'AI Assistant', email: 'assistant@ai.local', avatar_url: null } })
-              : supabase
-                  .from('profiles')
-                  .select('*')
-                  .eq('id', message.sender_id)
-                  .single(),
-            message.reply_to
-              ? supabase
-                  .from('messages')
-                  .select('*, sender:profiles!messages_sender_id_fkey(*)')
-                  .eq('id', message.reply_to)
-                  .single()
-              : Promise.resolve({ data: null }),
-          ])
+      const raw = Array.isArray(messagesData) ? messagesData : []
+      const ordered = [...raw].reverse()
 
-          const repliedToMessage = repliedTo.data
-            ? {
-                ...repliedTo.data,
-                sender: repliedTo.data.sender || undefined,
-              }
-            : undefined
+      const senderIds = Array.from(new Set(raw.map((m: any) => m.sender_id).filter(Boolean)))
+      const profilesMap: Record<string, any> = {}
+      if (senderIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('*')
+          .in('id', senderIds)
+        if (profiles) profiles.forEach((p: any) => { profilesMap[p.id] = p })
+      }
 
-          return {
-            ...message,
-            sender: sender.data || undefined,
-            replied_to_message: repliedToMessage,
-          }
-        })
-      )
+      const messageById: Record<string, any> = {}
+      raw.forEach((m: any) => { messageById[m.id] = m })
+
+      const messagesWithData = ordered.map((message: any) => {
+        const sender = profilesMap[message.sender_id]
+        const repliedRaw = message.reply_to ? messageById[message.reply_to] : null
+        const replied_to_message = repliedRaw
+          ? { ...repliedRaw, sender: profilesMap[repliedRaw.sender_id] || undefined }
+          : undefined
+        return {
+          ...message,
+          sender: sender || undefined,
+          replied_to_message,
+        }
+      })
 
       setMessages(messagesWithData)
     } catch (error) {
       console.error('Error fetching messages:', error)
+      setMessages([])
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
+    if (!chatId) return
+
+    setLoading(true)
+    setMessages([])
+    setChat(null)
+    setOtherParticipant(null)
+
     fetchChat()
     fetchMessages()
     requestNotificationPermission()
@@ -273,13 +277,22 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
 
           const aiResponse = await getAIResponse(aiPrompt, chatHistory)
 
-          // Create AI user ID (we'll use a special ID for AI)
-          const aiUserId = 'ai-assistant-00000000-0000-0000-0000-000000000000'
+          // Look up assistant user ID by email
+          const { data: assistantProfile, error: assistantError } = await supabase
+            .from('profiles')
+            .select('id, email')
+            .eq('email', ASSISTANT_EMAIL)
+            .single()
 
-          // Insert AI response as a message
+          if (assistantError || !assistantProfile) {
+            console.error('Assistant profile not found:', assistantError)
+            return
+          }
+
+          // Insert AI response as a message using the assistant's ID from the database
           const aiMessageData: any = {
             chat_id: chatId,
-            sender_id: aiUserId,
+            sender_id: assistantProfile.id,
             content: aiResponse,
             message_type: 'text',
           }
@@ -435,8 +448,8 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
           
           {chatAvatar ? (
             <img
-              src={chatAvatar}
-              alt={chatName}
+              src={chatAvatar ?? ''}
+              alt={chatName ?? 'Chat'}
               className="w-10 h-10 rounded-full object-cover cursor-pointer"
               onClick={onShowProfile}
             />
@@ -445,12 +458,12 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
               className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white font-semibold cursor-pointer"
               onClick={onShowProfile}
             >
-              {chatName.charAt(0).toUpperCase()}
+              {(chatName ?? '?').charAt(0).toUpperCase()}
             </div>
           )}
           
           <div className="flex-1 min-w-0" onClick={onShowProfile}>
-            <h2 className="text-base font-semibold text-gray-900 dark:text-white truncate">{chatName}</h2>
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white truncate">{chatName ?? 'Chat'}</h2>
             <p className="text-xs text-gray-500 dark:text-gray-400">
               {chat.type === 'group' ? `${participantsCount} participants` : 'Last seen 10 min ago'}
             </p>
@@ -493,7 +506,7 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
         ) : (
           messages.map((message, index) => {
             const isOwn = message.sender_id === userId
-            const isAI = message.sender_id === 'ai-assistant-00000000-0000-0000-0000-000000000000'
+            const isAI = message.sender?.email === ASSISTANT_EMAIL
             const previousMessage = index > 0 ? messages[index - 1] : null
             const showDateSeparator = shouldShowDateSeparator(message, previousMessage)
             const showAvatar = (!isOwn && !isAI) && chat.type === 'group' && 
@@ -625,7 +638,17 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
                         </a>
                       )}
                       {message.message_type === 'text' && (
-                        <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
+                        <p className="text-sm whitespace-pre-wrap break-words">
+                          {message.content.split(/(@assistant\b)/gi).map((part, index) =>
+                            /@assistant\b/i.test(part) ? (
+                              <span key={index} className="text-blue-500 font-semibold">
+                                {part}
+                              </span>
+                            ) : (
+                              <span key={index}>{part}</span>
+                            )
+                          )}
+                        </p>
                       )}
                        <div className={`flex items-center justify-end space-x-1 mt-1 ${
                          isOwn ? 'text-blue-100' : isAI ? 'text-purple-100' : 'text-gray-500'

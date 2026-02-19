@@ -3,7 +3,7 @@
 
 INSERT INTO profiles (id, email, full_name, avatar_url)
 VALUES (
-  'ai-assistant-00000000-0000-0000-0000-000000000000',
+  '00000000-0000-0000-0000-000000000001',
   'assistant@ai.local',
   'AI Assistant',
   'https://api.dicebear.com/7.x/bottts/svg?seed=assistant'

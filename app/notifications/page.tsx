@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { Notification } from '@/lib/types'
+import type { Notification } from '@/lib/types'
 import { fetchNotifications, markAllNotificationsAsRead, markNotificationAsRead, subscribeToNotifications, showBrowserNotification } from '@/lib/notifications'
 import { format } from 'date-fns'
 import ThemeToggle from '@/components/ThemeToggle'

@@ -4,7 +4,10 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { ChatWithParticipants } from '@/lib/types'
 import CreateChatModal from './CreateChatModal'
+import { ASSISTANT_CHAT_ID } from './AssistantChatPanel'
 import { format, formatDistanceToNow } from 'date-fns'
+
+export { ASSISTANT_CHAT_ID }
 
 interface ChatListProps {
   userId: string
@@ -193,6 +196,24 @@ export default function ChatList({ userId, onSelectChat, selectedChat }: ChatLis
   return (
     <>
       <div className="flex-1 overflow-y-auto">
+        {/* Assistant at top - click to chat with AI */}
+        <button
+          onClick={() => onSelectChat(ASSISTANT_CHAT_ID)}
+          className={`w-full p-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors ${
+            selectedChat === ASSISTANT_CHAT_ID ? 'bg-blue-50 dark:bg-blue-900 dark:bg-opacity-30' : ''
+          }`}
+        >
+          <div className="flex items-center space-x-3">
+            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white font-semibold text-lg shrink-0">
+              AI
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="font-semibold text-gray-900 dark:text-white truncate text-sm">Assistant</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 truncate">Chat with AI</p>
+            </div>
+          </div>
+        </button>
+        <div className="border-b border-gray-100 dark:border-gray-800 my-1" />
         <button
           onClick={() => setShowCreateModal(true)}
           className="w-full p-4 bg-blue-500 text-white hover:bg-blue-600 transition-colors font-medium"
