@@ -62,7 +62,7 @@ export default function ProfilePage() {
 
     setSaving(true)
     try {
-      let avatarUrl = profile?.avatar_url
+      let avatarUrl: string | null = profile?.avatar_url ?? null
 
       // Upload avatar if changed
       if (avatarFile) {
