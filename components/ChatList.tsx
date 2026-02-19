@@ -34,9 +34,8 @@ export default function ChatList({ userId, onSelectChat, selectedChat }: ChatLis
       const chatIds = participants.map((p) => p.chat_id)
 
       if (chatIds.length === 0) {
-        setChats([])
         setLoading(false)
-        return
+        return []
       }
 
       // Get chat details
