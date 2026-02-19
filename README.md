@@ -9,7 +9,7 @@ A modern chat application built with Next.js 14 and Supabase, supporting both on
 - 👥 Group chat functionality
 - 💬 Reply to messages (WhatsApp-style)
 - 😊 Emoji picker for sending emojis
-- 🎬 GIF support with Giphy integration
+- 🎬 GIF support with Tenor API integration
 - 🎨 Sticker picker
 - 📎 File and image uploads
 - 🗑️ Message deletion
@@ -51,15 +51,16 @@ npm install
    ```
    NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
    NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
-   NEXT_PUBLIC_GIPHY_API_KEY=your_giphy_api_key
+   NEXT_PUBLIC_TENOR_API_KEY=your_tenor_api_key
    NEXT_PUBLIC_GEMINI_API_KEY=your_gemini_api_key
    ```
 
    You can find these values in your Supabase project settings under "API".
    
-   For Giphy API key:
-   - Get a free API key from [developers.giphy.com](https://developers.giphy.com/)
-   - Create an app and copy your API key
+   For Tenor API key:
+   - Get a free API key from [developers.google.com/tenor](https://developers.google.com/tenor/guides/quickstart)
+   - Create a project in Google Cloud Console and enable Tenor API
+   - Copy your API key
    - Add it to `.env.local` (optional - GIFs won't work without it)
 
 ### 4. Run the Development Server
@@ -88,7 +89,7 @@ The application uses the following tables:
 3. **Send Messages**: Type and send messages in real-time
 4. **Reply to Messages**: Click on any message to reply to it (WhatsApp-style)
 5. **Send Emojis**: Click the emoji icon in the message input to open the emoji picker
-6. **Send GIFs**: Click the GIF icon to search and send GIFs (requires Giphy API key)
+6. **Send GIFs**: Click the GIF icon to search and send GIFs (requires Tenor API key)
 7. **Send Stickers**: Click the sticker icon to send emoji stickers
 8. **Upload Files**: Click the attachment icon to upload files and images
 9. **Delete Messages**: Hover over your own messages and click the delete icon
@@ -105,7 +106,7 @@ The application uses the following tables:
 - **Tailwind CSS**: Styling
 - **date-fns**: Date formatting utilities
 - **emoji-picker-react**: Emoji picker component
-- **axios**: HTTP client for Giphy API
+- **axios**: HTTP client for Tenor API
 
 ## Project Structure
 

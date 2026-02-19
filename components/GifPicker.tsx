@@ -9,11 +9,21 @@ interface GifPickerProps {
   onClose: () => void
 }
 
-// Using Giphy API - you'll need to get a free API key from https://developers.giphy.com/
-const GIPHY_API_KEY = process.env.NEXT_PUBLIC_GIPHY_API_KEY || 'YOUR_GIPHY_API_KEY'
+// Using Tenor API - you'll need to get a free API key from https://developers.google.com/tenor/guides/quickstart
+const TENOR_API_KEY = process.env.NEXT_PUBLIC_TENOR_API_KEY || 'YOUR_TENOR_API_KEY'
+
+interface TenorGif {
+  id: string
+  title: string
+  media_formats: {
+    gif?: { url: string; dims: number[] }
+    tinygif?: { url: string; dims: number[] }
+    nanogif?: { url: string; dims: number[] }
+  }
+}
 
 export default function GifPicker({ onGifSelect, isOpen, onClose }: GifPickerProps) {
-  const [gifs, setGifs] = useState<any[]>([])
+  const [gifs, setGifs] = useState<TenorGif[]>([])
   const [loading, setLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const pickerRef = useRef<HTMLDivElement>(null)
@@ -33,23 +43,24 @@ export default function GifPicker({ onGifSelect, isOpen, onClose }: GifPickerPro
     return () => {
       document.removeEventListener('mousedown', handleClickOutside)
     }
-  }, [isOpen])
+  }, [isOpen, onClose])
 
   const fetchTrendingGifs = async () => {
-    if (!GIPHY_API_KEY || GIPHY_API_KEY === 'YOUR_GIPHY_API_KEY') {
-      console.warn('Giphy API key not configured')
+    if (!TENOR_API_KEY || TENOR_API_KEY === 'YOUR_TENOR_API_KEY') {
+      console.warn('Tenor API key not configured')
       return
     }
 
     setLoading(true)
     try {
-      const response = await axios.get('https://api.giphy.com/v1/gifs/trending', {
+      const response = await axios.get('https://tenor.googleapis.com/v2/featured', {
         params: {
-          api_key: GIPHY_API_KEY,
+          key: TENOR_API_KEY,
           limit: 20,
+          media_filter: 'gif',
         },
       })
-      setGifs(response.data.data)
+      setGifs(response.data.results || [])
     } catch (error) {
       console.error('Error fetching GIFs:', error)
     } finally {
@@ -58,7 +69,7 @@ export default function GifPicker({ onGifSelect, isOpen, onClose }: GifPickerPro
   }
 
   const searchGifs = async (query: string) => {
-    if (!GIPHY_API_KEY || GIPHY_API_KEY === 'YOUR_GIPHY_API_KEY') {
+    if (!TENOR_API_KEY || TENOR_API_KEY === 'YOUR_TENOR_API_KEY') {
       return
     }
 
@@ -69,14 +80,15 @@ export default function GifPicker({ onGifSelect, isOpen, onClose }: GifPickerPro
 
     setLoading(true)
     try {
-      const response = await axios.get('https://api.giphy.com/v1/gifs/search', {
+      const response = await axios.get('https://tenor.googleapis.com/v2/search', {
         params: {
-          api_key: GIPHY_API_KEY,
           q: query,
+          key: TENOR_API_KEY,
           limit: 20,
+          media_filter: 'gif',
         },
       })
-      setGifs(response.data.data)
+      setGifs(response.data.results || [])
     } catch (error) {
       console.error('Error searching GIFs:', error)
     } finally {
@@ -91,26 +103,42 @@ export default function GifPicker({ onGifSelect, isOpen, onClose }: GifPickerPro
     return () => clearTimeout(timeoutId)
   }
 
+  const getGifUrl = (gif: TenorGif): string => {
+    // Prefer gif format, fallback to tinygif or nanogif
+    return gif.media_formats.gif?.url || 
+           gif.media_formats.tinygif?.url || 
+           gif.media_formats.nanogif?.url || 
+           ''
+  }
+
+  const getThumbnailUrl = (gif: TenorGif): string => {
+    // Use tinygif or nanogif for thumbnails
+    return gif.media_formats.tinygif?.url || 
+           gif.media_formats.nanogif?.url || 
+           gif.media_formats.gif?.url || 
+           ''
+  }
+
   if (!isOpen) return null
 
-  if (!GIPHY_API_KEY || GIPHY_API_KEY === 'YOUR_GIPHY_API_KEY') {
+  if (!TENOR_API_KEY || TENOR_API_KEY === 'YOUR_TENOR_API_KEY') {
     return (
       <div
         ref={pickerRef}
-        className="absolute bottom-full right-0 mb-2 bg-white rounded-lg shadow-lg border border-gray-200 p-4 z-50 w-80"
+        className="absolute bottom-full right-0 mb-2 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-4 z-50 w-80"
       >
-        <p className="text-sm text-gray-600">
-          Please configure GIPHY_API_KEY in your .env.local file
+        <p className="text-sm text-gray-600 dark:text-gray-300">
+          Please configure NEXT_PUBLIC_TENOR_API_KEY in your .env.local file
         </p>
-        <p className="text-xs text-gray-500 mt-2">
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
           Get a free API key from{' '}
           <a
-            href="https://developers.giphy.com/"
+            href="https://developers.google.com/tenor/guides/quickstart"
             target="_blank"
             rel="noopener noreferrer"
             className="text-blue-500 hover:underline"
           >
-            developers.giphy.com
+            developers.google.com/tenor
           </a>
         </p>
       </div>
@@ -142,22 +170,31 @@ export default function GifPicker({ onGifSelect, isOpen, onClose }: GifPickerPro
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-2">
-            {gifs.map((gif) => (
-              <button
-                key={gif.id}
-                onClick={() => {
-                  onGifSelect(gif.images.original.url)
-                  onClose()
-                }}
-                className="aspect-square rounded-lg overflow-hidden hover:opacity-80 transition-opacity"
-              >
-                <img
-                  src={gif.images.fixed_height_small.url}
-                  alt={gif.title}
-                  className="w-full h-full object-cover"
-                />
-              </button>
-            ))}
+            {gifs.map((gif) => {
+              const gifUrl = getGifUrl(gif)
+              const thumbnailUrl = getThumbnailUrl(gif)
+              
+              if (!gifUrl) return null
+              
+              return (
+                <button
+                  key={gif.id}
+                  onClick={() => {
+                    onGifSelect(gifUrl)
+                    onClose()
+                  }}
+                  className="aspect-square rounded-lg overflow-hidden hover:opacity-80 transition-opacity bg-gray-100 dark:bg-gray-700"
+                  title={gif.title}
+                >
+                  <img
+                    src={thumbnailUrl}
+                    alt={gif.title || 'GIF'}
+                    className="w-full h-full object-cover"
+                    loading="lazy"
+                  />
+                </button>
+              )
+            })}
           </div>
         )}
       </div>
