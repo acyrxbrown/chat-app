@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic'
 import { useState, useRef, useEffect } from 'react'
+import type { Theme } from 'emoji-picker-react'
 
 // Dynamically import emoji picker to avoid SSR issues
 const Picker = dynamic(() => import('emoji-picker-react'), { ssr: false })
@@ -46,7 +47,7 @@ export default function EmojiPicker({ onEmojiClick, isOpen, onClose }: EmojiPick
           width={350}
           height={400}
           previewConfig={{ showPreview: false }}
-          theme="light"
+          theme={'light' as Theme}
         />
       </div>
       <div className="hidden dark:block">
@@ -57,7 +58,7 @@ export default function EmojiPicker({ onEmojiClick, isOpen, onClose }: EmojiPick
           width={350}
           height={400}
           previewConfig={{ showPreview: false }}
-          theme="dark"
+          theme={'dark' as Theme}
         />
       </div>
     </div>
