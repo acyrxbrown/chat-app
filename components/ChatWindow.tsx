@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
-import { Message, Chat, Profile } from '@/lib/types'
+import { Message, Chat, Profile, MessageTopic } from '@/lib/types'
 import { format, isSameDay, isToday, isYesterday } from 'date-fns'
 import AddParticipantsModal from './AddParticipantsModal'
 import EmojiPicker from './EmojiPicker'
@@ -46,6 +46,7 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
   const [aiAnswer, setAiAnswer] = useState<string | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
+  const [activeTopicFilter, setActiveTopicFilter] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -152,6 +153,20 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
     queryKey: ['messages', chatId],
     queryFn: fetchMessages,
     enabled: !!chatId,
+  })
+
+  const { data: messageTopics = [] } = useQuery<MessageTopic[]>({
+    queryKey: ['messageTopics', chatId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('message_topics')
+        .select('*')
+        .eq('chat_id', chatId)
+      if (error) throw error
+      return (data || []) as MessageTopic[]
+    },
+    enabled: !!chatId,
+    staleTime: 1000 * 30,
   })
 
   const scrollToBottom = () => {
@@ -578,6 +593,22 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
     ? null 
     : otherParticipant?.avatar_url
 
+  const topicCounts: Record<string, number> = {}
+  messageTopics.forEach((t) => {
+    topicCounts[t.topic] = (topicCounts[t.topic] || 0) + 1
+  })
+  const topicEntries = Object.entries(topicCounts).sort((a, b) => b[1] - a[1])
+
+  const topicByMessageId: Record<string, string> = {}
+  messageTopics.forEach((t) => {
+    topicByMessageId[t.message_id] = t.topic
+  })
+
+  const visibleMessages =
+    activeTopicFilter && activeTopicFilter !== 'all'
+      ? messages.filter((m) => topicByMessageId[m.id] === activeTopicFilter)
+      : messages
+
   return (
     <div className="flex-1 flex flex-col h-full bg-gray-50 dark:bg-gray-900">
       {/* Chat Header */}
@@ -661,17 +692,53 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
         </div>
       </div>
 
+      {/* Topic filter chips */}
+      {topicEntries.length > 0 && (
+        <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-2 text-xs flex items-center space-x-2 overflow-x-auto">
+          <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap">Topics:</span>
+          <button
+            type="button"
+            onClick={() => setActiveTopicFilter(null)}
+            className={`px-2 py-1 rounded-full border text-[11px] whitespace-nowrap ${
+              !activeTopicFilter
+                ? 'bg-blue-500 text-white border-blue-500'
+                : 'bg-transparent text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600'
+            }`}
+          >
+            All
+          </button>
+          {topicEntries.map(([topic, count]) => (
+            <button
+              key={topic}
+              type="button"
+              onClick={() => setActiveTopicFilter(topic)}
+              className={`px-2 py-1 rounded-full border text-[11px] whitespace-nowrap ${
+                activeTopicFilter === topic
+                  ? 'bg-blue-500 text-white border-blue-500'
+                  : 'bg-transparent text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600'
+              }`}
+            >
+              {topic} ({count})
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-1">
-        {messages.length === 0 ? (
+        {visibleMessages.length === 0 ? (
           <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
-            <p>No messages yet. Start the conversation!</p>
+            <p>
+              {messages.length === 0
+                ? 'No messages yet. Start the conversation!'
+                : 'No messages for this topic yet.'}
+            </p>
           </div>
         ) : (
-          messages.map((message, index) => {
+          visibleMessages.map((message, index) => {
             const isOwn = message.sender_id === userId
             const isAI = message.sender?.email === ASSISTANT_EMAIL
-            const previousMessage = index > 0 ? messages[index - 1] : null
+            const previousMessage = index > 0 ? visibleMessages[index - 1] : null
             const showDateSeparator = shouldShowDateSeparator(message, previousMessage)
             const showAvatar = (!isOwn && !isAI) && chat.type === 'group' && 
               (index === 0 || !previousMessage || previousMessage.sender_id !== message.sender_id)
