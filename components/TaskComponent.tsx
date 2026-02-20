@@ -80,7 +80,7 @@ export default function TaskComponent({ task, userId, chatId, participants }: Ta
   }
 
   const assignee = participants.find(p => p.id === task.assigned_to)
-  const isOverdue = task.due_date && new Date(task.due_date) < new Date() && task.status !== 'completed'
+  const isOverdue: boolean = task.due_date ? new Date(task.due_date) < new Date() && task.status !== 'completed' : false
 
   return (
     <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">

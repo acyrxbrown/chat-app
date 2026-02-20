@@ -130,7 +130,7 @@ export default function PollComponent({ poll, userId, chatId }: PollComponentPro
 
   const totalVotes = pollData?.votes.length || 0
   const hasVoted = (pollData?.userVotes.length || 0) > 0
-  const isExpired = poll.expires_at && new Date(poll.expires_at) < new Date()
+  const isExpired: boolean = poll.expires_at ? new Date(poll.expires_at) < new Date() : false
 
   if (isLoading) {
     return (
