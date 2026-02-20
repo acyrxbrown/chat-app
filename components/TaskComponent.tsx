@@ -33,7 +33,8 @@ export default function TaskComponent({ task, userId, chatId, participants }: Ta
 
       if (newStatus === 'completed') {
         updateData.completed_at = new Date().toISOString()
-      } else if (task.status === 'completed' && newStatus !== 'completed') {
+      } else if (task.status === 'completed') {
+        // Moving away from completed back to another status
         updateData.completed_at = null
       }
 
