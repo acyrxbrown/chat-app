@@ -9,12 +9,25 @@ import EmojiPicker from './EmojiPicker'
 import ReplyPreview from './ReplyPreview'
 import GifPicker from './GifPicker'
 import StickerPicker from './StickerPicker'
+import PollComponent from './PollComponent'
+import CreatePollModal from './CreatePollModal'
+import TaskComponent from './TaskComponent'
+import CreateTaskModal from './CreateTaskModal'
+import CalendarEventComponent from './CalendarEventComponent'
+import CreateCalendarEventModal from './CreateCalendarEventModal'
+import ReminderComponent from './ReminderComponent'
+import CreateReminderModal from './CreateReminderModal'
 import { uploadFile, getFileType } from '@/lib/storage'
 import { requestNotificationPermission } from '@/lib/notifications'
 import { detectAITag, extractAIPrompt, getAIResponse } from '@/lib/ai'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { storeMessageTopicAndMaybeSuggestChannel } from '@/lib/aiHighlights'
 import AIHighlightsPanel from './AIHighlightsPanel'
+import { Poll, Task, CalendarEvent, Reminder, Profile } from '@/lib/types'
+import AISocialHelperPanel from './AISocialHelperPanel'
+import ToneAnalyzer from './ToneAnalyzer'
+import AIReplySuggestions from './AIReplySuggestions'
+import { analyzeTone, ToneAnalysis, getReplySuggestions } from '@/lib/aiSocialHelper'
 
 const ASSISTANT_EMAIL = 'assistant@ai.local'
 
@@ -47,6 +60,24 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
   const [activeTopicFilter, setActiveTopicFilter] = useState<string | null>(null)
+  const [showCreatePoll, setShowCreatePoll] = useState(false)
+  const [showCreateTask, setShowCreateTask] = useState(false)
+  const [showCreateCalendarEvent, setShowCreateCalendarEvent] = useState(false)
+  const [showCreateReminder, setShowCreateReminder] = useState(false)
+  const [productivityMessageId, setProductivityMessageId] = useState<string | null>(null)
+  const [polls, setPolls] = useState<Record<string, Poll>>({})
+  const [tasks, setTasks] = useState<Record<string, Task>>({})
+  const [calendarEvents, setCalendarEvents] = useState<Record<string, CalendarEvent>>({})
+  const [reminders, setReminders] = useState<Record<string, Reminder>>({})
+  const [participants, setParticipants] = useState<Profile[]>([])
+  const [showAISocialHelper, setShowAISocialHelper] = useState(false)
+  const [toneAnalysis, setToneAnalysis] = useState<ToneAnalysis | null>(null)
+  const [analyzingTone, setAnalyzingTone] = useState(false)
+  const [showToneAnalyzer, setShowToneAnalyzer] = useState(false)
+  const [selectedMessageForReply, setSelectedMessageForReply] = useState<Message | null>(null)
+  const [replySuggestions, setReplySuggestions] = useState<any[]>([])
+  const [loadingReplySuggestions, setLoadingReplySuggestions] = useState(false)
+  const toneAnalysisTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -175,6 +206,125 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
 
   useEffect(() => {
     scrollToBottom()
+  }, [messages])
+
+  // Fetch participants
+  useEffect(() => {
+    const fetchParticipants = async () => {
+      try {
+        // First get participant user IDs
+        const { data: participantsData, error: participantsError } = await supabase
+          .from('chat_participants')
+          .select('user_id')
+          .eq('chat_id', chatId)
+
+        if (participantsError) throw participantsError
+
+        const userIds = (participantsData || []).map((p: any) => p.user_id).filter(Boolean)
+        
+        if (userIds.length === 0) {
+          setParticipants([])
+          return
+        }
+
+        // Then fetch profiles for those user IDs
+        const { data: profilesData, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, full_name, email, avatar_url')
+          .in('id', userIds)
+
+        if (profilesError) throw profilesError
+
+        setParticipants((profilesData || []) as Profile[])
+      } catch (error) {
+        console.error('Error fetching participants:', error)
+        setParticipants([])
+      }
+    }
+
+    if (chatId) {
+      fetchParticipants()
+    }
+  }, [chatId])
+
+  // Fetch productivity data for messages
+  useEffect(() => {
+    const fetchProductivityData = async () => {
+      if (!messages.length) return
+
+      try {
+        const messageIds = messages.map(m => m.id)
+        if (messageIds.length === 0) return
+
+        // Fetch polls
+        const pollMessageIds = messages.filter(m => m.message_type === 'poll').map(m => m.id)
+        if (pollMessageIds.length > 0) {
+          const { data: pollsData, error: pollsError } = await supabase
+            .from('polls')
+            .select('*')
+            .in('message_id', pollMessageIds)
+          
+          if (pollsError) {
+            console.error('Error fetching polls:', pollsError)
+          } else if (pollsData && pollsData.length > 0) {
+            const pollsMap: Record<string, Poll> = {}
+            pollsData.forEach((poll: any) => {
+              if (poll.message_id) {
+                pollsMap[poll.message_id] = poll as Poll
+              }
+            })
+            setPolls(prev => ({ ...prev, ...pollsMap }))
+          }
+        }
+
+        // Fetch tasks
+        const { data: tasksData } = await supabase
+          .from('tasks')
+          .select('*')
+          .in('message_id', messageIds.filter(Boolean))
+        if (tasksData) {
+          const tasksMap: Record<string, Task> = {}
+          tasksData.forEach((task: any) => {
+            if (task.message_id) {
+              tasksMap[task.message_id] = task as Task
+            }
+          })
+          setTasks(tasksMap)
+        }
+
+        // Fetch calendar events
+        const { data: eventsData } = await supabase
+          .from('calendar_events')
+          .select('*')
+          .in('message_id', messageIds.filter(Boolean))
+        if (eventsData) {
+          const eventsMap: Record<string, CalendarEvent> = {}
+          eventsData.forEach((event: any) => {
+            if (event.message_id) {
+              eventsMap[event.message_id] = event as CalendarEvent
+            }
+          })
+          setCalendarEvents(eventsMap)
+        }
+
+        // Fetch reminders
+        const { data: remindersData } = await supabase
+          .from('reminders')
+          .select('*')
+          .in('message_id', messageIds)
+        if (remindersData) {
+          const remindersMap: Record<string, Reminder> = {}
+          remindersData.forEach((reminder: any) => {
+            remindersMap[reminder.message_id] = reminder as Reminder
+          })
+          setReminders(remindersMap)
+        }
+      } catch (error) {
+        console.error('Error fetching productivity data:', error)
+      }
+    }
+
+    fetchProductivityData()
   }, [messages])
 
   useEffect(() => {
@@ -502,6 +652,82 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
     })
   }
 
+  const handleCreateProductivityFeature = async (type: 'poll' | 'task' | 'calendar_event' | 'reminder') => {
+    // First create a message for the productivity feature
+    const messageContent = type === 'poll' ? 'Poll created' : 
+                          type === 'task' ? 'Task created' :
+                          type === 'calendar_event' ? 'Calendar event created' :
+                          'Reminder created'
+    
+    try {
+      const { data: message, error } = await supabase
+        .from('messages')
+        .insert({
+          chat_id: chatId,
+          sender_id: userId,
+          content: messageContent,
+          message_type: type,
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      setProductivityMessageId(message.id)
+      
+      if (type === 'poll') {
+        setShowCreatePoll(true)
+      } else if (type === 'task') {
+        setShowCreateTask(true)
+      } else if (type === 'calendar_event') {
+        setShowCreateCalendarEvent(true)
+      } else if (type === 'reminder') {
+        setShowCreateReminder(true)
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['messages', chatId] })
+    } catch (error) {
+      console.error('Error creating message for productivity feature:', error)
+      alert('Failed to create. Please try again.')
+    }
+  }
+
+  const handleProductivityCreated = async () => {
+    setProductivityMessageId(null)
+    // Invalidate and refetch messages to get the latest data
+    await queryClient.invalidateQueries({ queryKey: ['messages', chatId] })
+    
+    // Refetch productivity data after messages are updated
+    setTimeout(async () => {
+      try {
+        // Get updated messages from query cache
+        const updatedMessages = queryClient.getQueryData<Message[]>(['messages', chatId]) || []
+        const pollMessageIds = updatedMessages
+          .filter(m => m.message_type === 'poll')
+          .map(m => m.id)
+        
+        if (pollMessageIds.length > 0) {
+          const { data: pollsData } = await supabase
+            .from('polls')
+            .select('*')
+            .in('message_id', pollMessageIds)
+          
+          if (pollsData && pollsData.length > 0) {
+            const pollsMap: Record<string, Poll> = {}
+            pollsData.forEach((poll: any) => {
+              if (poll.message_id) {
+                pollsMap[poll.message_id] = poll as Poll
+              }
+            })
+            setPolls(prev => ({ ...prev, ...pollsMap }))
+          }
+        }
+      } catch (error) {
+        console.error('Error refetching polls:', error)
+      }
+    }, 500)
+  }
+
   const handleStickerSelect = (sticker: string) => {
     handleSendMessage(undefined, 'sticker', {
       url: sticker,
@@ -513,6 +739,34 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
 
   const handleEmojiClick = (emoji: string) => {
     setNewMessage((prev) => prev + emoji)
+    inputRef.current?.focus()
+  }
+
+  const handleAnalyzeTone = async () => {
+    if (!newMessage.trim()) {
+      setShowToneAnalyzer(false)
+      setToneAnalysis(null)
+      return
+    }
+
+    setAnalyzingTone(true)
+    setShowToneAnalyzer(true)
+    try {
+      const analysis = await analyzeTone(
+        newMessage,
+        `Chatting with ${otherParticipant?.full_name || otherParticipant?.email || 'someone'}`
+      )
+      setToneAnalysis(analysis)
+    } catch (error) {
+      console.error('Error analyzing tone:', error)
+      setShowToneAnalyzer(false)
+    } finally {
+      setAnalyzingTone(false)
+    }
+  }
+
+  const handleAISuggestionSelect = (text: string) => {
+    setNewMessage(text)
     inputRef.current?.focus()
   }
 
@@ -807,6 +1061,37 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
                         </svg>
                       </button>
+                      {/* AI Reply Suggestions button - only for messages from others */}
+                      {!isOwn && (
+                        <button
+                          onClick={async () => {
+                            setSelectedMessageForReply(message)
+                            setLoadingReplySuggestions(true)
+                            try {
+                              const chatHistory = messages.slice(-10).map(m => ({
+                                role: m.sender_id === userId ? 'user' : 'assistant',
+                                content: m.content,
+                              }))
+                              const suggestions = await getReplySuggestions(
+                                message.content,
+                                chatHistory,
+                                `Chatting with ${otherParticipant?.full_name || otherParticipant?.email || 'someone'}`
+                              )
+                              setReplySuggestions(suggestions)
+                            } catch (error) {
+                              console.error('Error getting reply suggestions:', error)
+                            } finally {
+                              setLoadingReplySuggestions(false)
+                            }
+                          }}
+                          className="absolute -right-20 top-1/2 transform -translate-y-1/2 opacity-0 group-hover:opacity-100 p-1 hover:bg-blue-100 rounded-full transition-opacity"
+                          title="Get AI reply suggestions"
+                        >
+                          <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                          </svg>
+                        </button>
+                      )}
                       {/* Reply Preview */}
                       {message.replied_to_message && (
                         <div
@@ -834,7 +1119,9 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
                         <img
                           src={message.file_url}
                           alt="GIF"
-                          className="max-w-xs rounded-lg"
+                          className="max-w-xs rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+                          onClick={() => window.open(message.file_url!, '_blank')}
+                          title="Click to open GIF in new tab"
                         />
                       )}
                       {message.message_type === 'sticker' && (
@@ -867,6 +1154,41 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
                             )}
                           </div>
                         </a>
+                      )}
+                      {message.message_type === 'poll' && (
+                        polls[message.id] ? (
+                          <PollComponent
+                            poll={polls[message.id]}
+                            userId={userId}
+                            chatId={chatId}
+                          />
+                        ) : (
+                          <div className="text-sm text-gray-500 dark:text-gray-400 italic p-2 bg-gray-50 dark:bg-gray-800 rounded">
+                            {message.content || 'Loading poll...'}
+                          </div>
+                        )
+                      )}
+                      {message.message_type === 'task' && tasks[message.id] && (
+                        <TaskComponent
+                          task={tasks[message.id]}
+                          userId={userId}
+                          chatId={chatId}
+                          participants={participants}
+                        />
+                      )}
+                      {message.message_type === 'calendar_event' && calendarEvents[message.id] && (
+                        <CalendarEventComponent
+                          event={calendarEvents[message.id]}
+                          userId={userId}
+                          chatId={chatId}
+                          participants={participants}
+                        />
+                      )}
+                      {message.message_type === 'reminder' && reminders[message.id] && (
+                        <ReminderComponent
+                          reminder={reminders[message.id]}
+                          userId={userId}
+                        />
                       )}
                       {message.message_type === 'text' && (
                         <p className="text-sm whitespace-pre-wrap break-words">
@@ -993,6 +1315,68 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
               </svg>
             </button>
+
+            <button
+              type="button"
+              onClick={() => setShowAISocialHelper(true)}
+              className="p-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full"
+              title="AI Social Helper"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+              </svg>
+            </button>
+            <div className="relative group">
+              <button
+                type="button"
+                className="p-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full"
+                title="Productivity"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                </svg>
+              </button>
+              <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block">
+                <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-2 min-w-[200px]">
+                  <button
+                    onClick={() => handleCreateProductivityFeature('poll')}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-sm flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                    Create Poll
+                  </button>
+                  <button
+                    onClick={() => handleCreateProductivityFeature('task')}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-sm flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                    </svg>
+                    Create Task
+                  </button>
+                  <button
+                    onClick={() => handleCreateProductivityFeature('calendar_event')}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-sm flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    Create Event
+                  </button>
+                  <button
+                    onClick={() => handleCreateProductivityFeature('reminder')}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-sm flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Create Reminder
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
           
           <div className="flex-1 relative">
@@ -1000,7 +1384,21 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
               ref={inputRef}
               type="text"
               value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
+              onChange={(e) => {
+                setNewMessage(e.target.value)
+                // Auto-analyze tone when typing (debounced)
+                if (toneAnalysisTimeoutRef.current) {
+                  clearTimeout(toneAnalysisTimeoutRef.current)
+                }
+                if (e.target.value.trim().length > 10) {
+                  toneAnalysisTimeoutRef.current = setTimeout(() => {
+                    handleAnalyzeTone()
+                  }, 1000)
+                } else {
+                  setShowToneAnalyzer(false)
+                  setToneAnalysis(null)
+                }
+              }}
               placeholder="Type a message or @assistant to ask AI"
               className="w-full px-4 py-2 pr-10 bg-gray-100 dark:bg-gray-700 dark:text-white rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500"
               onFocus={() => {
@@ -1009,6 +1407,15 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
                 setShowStickerPicker(false)
               }}
             />
+            {showToneAnalyzer && toneAnalysis && (
+              <div className="absolute bottom-full right-0 mb-2 z-50">
+                <ToneAnalyzer
+                  analysis={toneAnalysis}
+                  isLoading={analyzingTone}
+                  onClose={() => setShowToneAnalyzer(false)}
+                />
+              </div>
+            )}
             <div className="absolute right-2 bottom-2">
               <button
                 type="button"
@@ -1069,6 +1476,58 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
           chatId={chatId}
           onClose={() => setShowAddParticipants(false)}
         />
+      )}
+
+      {productivityMessageId && (
+        <>
+          <CreatePollModal
+            isOpen={showCreatePoll}
+            onClose={() => {
+              setShowCreatePoll(false)
+              setProductivityMessageId(null)
+            }}
+            chatId={chatId}
+            userId={userId}
+            messageId={productivityMessageId}
+            onPollCreated={handleProductivityCreated}
+          />
+          <CreateTaskModal
+            isOpen={showCreateTask}
+            onClose={() => {
+              setShowCreateTask(false)
+              setProductivityMessageId(null)
+            }}
+            chatId={chatId}
+            userId={userId}
+            messageId={productivityMessageId}
+            participants={participants}
+            onTaskCreated={handleProductivityCreated}
+          />
+          <CreateCalendarEventModal
+            isOpen={showCreateCalendarEvent}
+            onClose={() => {
+              setShowCreateCalendarEvent(false)
+              setProductivityMessageId(null)
+            }}
+            chatId={chatId}
+            userId={userId}
+            messageId={productivityMessageId}
+            participants={participants}
+            onEventCreated={handleProductivityCreated}
+          />
+          <CreateReminderModal
+            isOpen={showCreateReminder}
+            onClose={() => {
+              setShowCreateReminder(false)
+              setProductivityMessageId(null)
+            }}
+            chatId={chatId}
+            userId={userId}
+            messageId={productivityMessageId}
+            participants={participants}
+            onReminderCreated={handleProductivityCreated}
+          />
+        </>
       )}
 
       {threadRoot && threadMessages.length > 0 && (
@@ -1213,7 +1672,37 @@ export default function ChatWindow({ chatId, userId, onShowProfile }: ChatWindow
       {/* AI Highlights: trending topics & suggestions */}
       {chatId && (
         <AIHighlightsPanel chatId={chatId} />
-      )}
-    </div>
-  )
-}
+        )}
+
+        <AISocialHelperPanel
+          isOpen={showAISocialHelper}
+          onClose={() => setShowAISocialHelper(false)}
+          messages={messages}
+          userId={userId}
+          otherParticipantName={otherParticipant?.full_name || otherParticipant?.email || undefined}
+          onSelectSuggestion={handleAISuggestionSelect}
+        />
+
+        {selectedMessageForReply && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setSelectedMessageForReply(null)}>
+            <div onClick={(e) => e.stopPropagation()}>
+              <AIReplySuggestions
+                suggestions={replySuggestions}
+                onSelect={(suggestion) => {
+                  setNewMessage(suggestion)
+                  setSelectedMessageForReply(null)
+                  setReplySuggestions([])
+                  inputRef.current?.focus()
+                }}
+                onClose={() => {
+                  setSelectedMessageForReply(null)
+                  setReplySuggestions([])
+                }}
+                isLoading={loadingReplySuggestions}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }

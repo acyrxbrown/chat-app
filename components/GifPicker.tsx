@@ -36,12 +36,14 @@ export default function GifPicker({ onGifSelect, isOpen, onClose }: GifPickerPro
     }
 
     if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside)
+      // Use 'click' instead of 'mousedown' so the GIF button's click handler runs first
+      // This prevents the picker from closing before the GIF is selected
+      document.addEventListener('click', handleClickOutside)
       fetchTrendingGifs()
     }
 
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('click', handleClickOutside)
     }
   }, [isOpen, onClose])
 
@@ -179,7 +181,8 @@ export default function GifPicker({ onGifSelect, isOpen, onClose }: GifPickerPro
               return (
                 <button
                   key={gif.id}
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation() // Prevent event from bubbling to document click handler
                     onGifSelect(gifUrl)
                     onClose()
                   }}
