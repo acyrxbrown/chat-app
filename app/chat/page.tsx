@@ -1,225 +1,320 @@
-'use client'
+"use client";
 
-import { useEffect, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
-import ChatList from '@/components/ChatList'
-import ChatWindow from '@/components/ChatWindow'
-import AssistantChatPanel from '@/components/AssistantChatPanel'
-import { ASSISTANT_CHAT_ID } from '@/components/AssistantChatPanel'
-import UserProfilePanel from '@/components/UserProfilePanel'
-import NotificationBell from '@/components/NotificationBell'
-import ThemeToggle from '@/components/ThemeToggle'
+import { useCallback, useRef, useState } from "react";
+import Link from "next/link";
+import { parseDiffussedMessage, DIFFUSSION_PHOTO, DIFFUSSION_VIDEO } from "@/lib/diffusion";
+import { VoiceRecorder } from "@/components/VoiceRecorder";
+import { VoiceMessageBubble } from "@/components/VoiceMessageBubble";
+
+type MessagePart =
+  | { kind: "user"; content: string; diffussed?: boolean }
+  | { kind: "voice"; audioDataUrl: string; durationSeconds: number; fromUser: boolean }
+  | { kind: "assistant"; content: string }
+  | {
+      kind: "diffussed";
+      userContent: string;
+      prompt: string;
+      type: "photo" | "video";
+      text?: string;
+      imageBase64?: string;
+      videoUri?: string;
+    };
 
 export default function ChatPage() {
-  const [user, setUser] = useState<any>(null)
-  const [userProfile, setUserProfile] = useState<any>(null)
-  const [selectedChat, setSelectedChat] = useState<string | null>(null)
-  const [showProfilePanel, setShowProfilePanel] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const router = useRouter()
-  const searchParams = useSearchParams()
+  const [messages, setMessages] = useState<MessagePart[]>([
+    {
+      kind: "assistant",
+      content:
+        "Hi! You can chat with me, send a voice note with the mic button, or tag @diffussion-photo / @diffussion-video for AI images. Try: \"A cozy coffee shop @diffussion-photo\"",
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    // Check if user is logged in
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!session?.user) {
-        router.push('/')
-      } else {
-        setUser(session.user)
-        // Fetch user profile
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .single()
-        setUserProfile(profile)
-        setLoading(false)
+  const scrollToBottom = useCallback(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
+  const send = useCallback(async () => {
+    const text = input.trim();
+    if (!text || loading) return;
+
+    setInput("");
+    setLoading(true);
+    setError(null);
+
+    const { isDiffussed, type, prompt, displayText } = parseDiffussedMessage(text);
+
+    if (isDiffussed && type) {
+      setMessages((m) => [
+        ...m,
+        {
+          kind: "diffussed",
+          userContent: displayText,
+          prompt,
+          type,
+          text: undefined,
+          imageBase64: undefined,
+          videoUri: undefined,
+        },
+      ]);
+      scrollToBottom();
+
+      try {
+        const res = await fetch("/api/diffusion", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt, type }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          throw new Error(data.error || res.statusText);
+        }
+
+        setMessages((m) => {
+          const next = [...m];
+          const idx = next.length - 1;
+          if (next[idx]?.kind === "diffussed") {
+            next[idx] = {
+              ...next[idx],
+              kind: "diffussed",
+              text: data.text,
+              imageBase64: data.imageBase64,
+              videoUri: data.videoUri,
+            };
+          }
+          return next;
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Generation failed");
+        setMessages((m) => {
+          const next = [...m];
+          const idx = next.length - 1;
+          if (next[idx]?.kind === "diffussed") {
+            next[idx] = {
+              ...next[idx],
+              kind: "diffussed",
+              text: `Failed: ${e instanceof Error ? e.message : "Unknown error"}`,
+            };
+          }
+          return next;
+        });
       }
-    })
+    } else {
+      setMessages((m) => [...m, { kind: "user", content: text }]);
+      scrollToBottom();
 
-    // Listen for auth changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (!session?.user) {
-        router.push('/')
-      } else {
-        setUser(session.user)
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .single()
-        setUserProfile(profile)
+      try {
+        const history = [...messages, { kind: "user" as const, content: text }]
+          .filter((x) => x.kind === "user" || x.kind === "assistant")
+          .map((x) => ({
+            role: x.kind === "user" ? "user" : "assistant",
+            content: x.kind === "user" ? x.content : (x as { content: string }).content,
+          }));
+
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: history }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || res.statusText);
+        }
+
+        const { message } = await res.json();
+        setMessages((m) => [...m, { kind: "assistant", content: message }]);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Chat failed");
       }
-    })
-
-    return () => subscription.unsubscribe()
-  }, [router])
-
-  useEffect(() => {
-    const idParam = searchParams.get('id')
-    const assistantParam = searchParams.get('assistant')
-
-    if (idParam) {
-      setSelectedChat(idParam)
-    } else if (assistantParam === '1') {
-      // Backwards compatibility for older links using ?assistant=1
-      setSelectedChat(ASSISTANT_CHAT_ID)
-    } else {
-      setSelectedChat(null)
-    }
-  }, [searchParams])
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut()
-    router.push('/')
-  }
-
-  const handleSelectChat = (chatId: string) => {
-    setSelectedChat(chatId)
-
-    const params = new URLSearchParams(searchParams.toString())
-    params.delete('assistant')
-
-    if (chatId) {
-      params.set('id', chatId)
-    } else {
-      params.delete('id')
     }
 
-    const query = params.toString()
-    router.push(query ? `/chat?${query}` : '/chat')
-  }
+    setLoading(false);
+    scrollToBottom();
+  }, [input, loading, messages, scrollToBottom]);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-pink-50 to-purple-50">
-        <div className="text-xl">Loading...</div>
-      </div>
-    )
-  }
+  const handleVoiceComplete = useCallback(
+    (audioDataUrl: string, durationSeconds: number) => {
+      setMessages((m) => [
+        ...m,
+        { kind: "voice", audioDataUrl, durationSeconds, fromUser: true },
+      ]);
+      scrollToBottom();
+    },
+    [scrollToBottom]
+  );
 
   return (
-    <div className="flex h-screen bg-gradient-to-br from-pink-50 to-purple-50 dark:from-gray-900 dark:to-gray-800">
-      {/* Left Sidebar Navigation */}
-      <div className="w-16 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700 flex flex-col items-center py-4 space-y-6">
-        <button
-          onClick={() => router.push('/chat')}
-          className="p-3 rounded-lg hover:bg-gray-100 transition-colors"
+    <div className="min-h-screen max-w-2xl mx-auto flex flex-col">
+      <header className="flex items-center gap-3 px-4 py-3 border-b border-slate-700 bg-slate-900/50 shrink-0">
+        <Link
+          href="/"
+          className="p-2 -ml-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+          aria-label="Back"
         >
-          <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
-        </button>
-        <button
-          onClick={() => router.push('/chat')}
-          className="p-3 rounded-lg bg-gray-900 dark:bg-gray-700 text-white"
-        >
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-          </svg>
-        </button>
-        <button
-          onClick={() => router.push(`/chat?id=${ASSISTANT_CHAT_ID}`)}
-          className="p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-          title="Assistant"
-        >
-          <svg className="w-6 h-6 text-gray-600 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-          </svg>
-        </button>
-        <button
-          onClick={() => router.push('/status')}
-          className="p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-        >
-          <svg className="w-6 h-6 text-gray-600 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-          </svg>
-        </button>
-        <div className="relative">
-          <button
-            onClick={() => router.push('/notifications')}
-            className="p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-          >
-            <svg className="w-6 h-6 text-gray-600 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-            </svg>
-          </button>
-          <div className="absolute top-0 right-0">
-            <NotificationBell />
-          </div>
+        </Link>
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold text-white">Chat</p>
+          <p className="text-slate-400 text-xs">
+            Voice notes · Tag {DIFFUSSION_PHOTO} or {DIFFUSSION_VIDEO}
+          </p>
         </div>
-        <ThemeToggle />
-        <button
-          onClick={() => router.push('/profile')}
-          className="p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-        >
-          <svg className="w-6 h-6 text-gray-600 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-          </svg>
-        </button>
-      </div>
+      </header>
 
-      {/* Chat List Sidebar */}
-      <div className="w-80 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700 flex flex-col">
-        <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-          <div className="flex items-center justify-between mb-4">
-            <h1 className="text-xl font-bold dark:text-white">Connections</h1>
-            <button
-              onClick={handleLogout}
-              className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
-            >
-              <svg className="w-5 h-5 text-gray-600 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-            </button>
-          </div>
-          <div className="flex items-center space-x-2">
-            <div className="flex-1 relative">
-              <input
-                type="text"
-                placeholder="Search..."
-                className="w-full pl-10 pr-4 py-2 bg-gray-100 dark:bg-gray-800 dark:text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <svg className="w-5 h-5 text-gray-400 dark:text-gray-500 absolute left-3 top-1/2 transform -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </div>
-          </div>
-        </div>
-        <ChatList userId={user?.id} onSelectChat={handleSelectChat} selectedChat={selectedChat} />
-      </div>
+      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+        {messages.map((m, i) => {
+          if (m.kind === "voice") {
+            return (
+              <div
+                key={i}
+                className={`flex gap-3 ${m.fromUser ? "flex-row-reverse" : ""}`}
+              >
+                <div className="w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center shrink-0">
+                  <svg className="w-4 h-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                </div>
+                <VoiceMessageBubble
+                  audioDataUrl={m.audioDataUrl}
+                  durationSeconds={m.durationSeconds}
+                  isFromUser={m.fromUser}
+                />
+              </div>
+            );
+          }
 
-      {/* Main Chat Area */}
-      <div className="flex-1 flex">
-        {selectedChat === ASSISTANT_CHAT_ID ? (
-          <AssistantChatPanel userId={user?.id ?? ''} />
-        ) : selectedChat ? (
-          <ChatWindow 
-            chatId={selectedChat} 
-            userId={user?.id} 
-            onShowProfile={() => setShowProfilePanel(true)}
-          />
-        ) : (
-          <div className="flex-1 flex items-center justify-center text-gray-500 dark:text-gray-400">
-            <div className="text-center">
-              <p className="text-xl mb-2">Select a chat to start messaging</p>
-              <p className="text-sm">Or create a new chat from the sidebar</p>
+          if (m.kind === "user") {
+            return (
+              <div key={i} className="flex justify-end gap-3">
+                <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-blue-600 text-white">
+                  <p className="text-sm whitespace-pre-wrap">{m.content}</p>
+                </div>
+                <div className="w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center shrink-0">
+                  <svg className="w-4 h-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                </div>
+              </div>
+            );
+          }
+
+          if (m.kind === "assistant") {
+            return (
+              <div key={i} className="flex gap-3">
+                <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center shrink-0">
+                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                  </svg>
+                </div>
+                <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-slate-700/80 text-slate-100">
+                  <p className="text-sm whitespace-pre-wrap leading-relaxed">{m.content}</p>
+                </div>
+              </div>
+            );
+          }
+
+          if (m.kind === "diffussed") {
+            return (
+              <div key={i} className="space-y-2">
+                <div className="flex justify-end gap-3">
+                  <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-blue-600 text-white">
+                    <p className="text-sm whitespace-pre-wrap">{m.userContent}</p>
+                  </div>
+                  <div className="w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center shrink-0">
+                    <svg className="w-4 h-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <div className="w-8 h-8 rounded-full bg-violet-600 flex items-center justify-center shrink-0">
+                    <span className="text-white text-xs font-bold">
+                      {m.type === "photo" ? "🖼" : "🎬"}
+                    </span>
+                  </div>
+                  <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-slate-700/80 text-slate-100 space-y-2">
+                    {!m.imageBase64 && !m.videoUri && !m.text && (
+                      <p className="text-sm text-slate-400 animate-pulse">
+                        Generating{m.type === "photo" ? " image" : " video"}…
+                      </p>
+                    )}
+                    {m.imageBase64 && (
+                      <img
+                        src={`data:image/png;base64,${m.imageBase64}`}
+                        alt={m.prompt}
+                        className="rounded-lg max-w-full max-h-80 object-cover"
+                      />
+                    )}
+                    {m.videoUri && (
+                      <video
+                        src={m.videoUri}
+                        controls
+                        className="rounded-lg max-w-full max-h-80"
+                      />
+                    )}
+                    {m.text && (
+                      <p className="text-sm text-slate-300">{m.text}</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          return null;
+        })}
+
+        {loading && (
+          <div className="flex gap-3">
+            <div className="w-8 h-8 rounded-full bg-violet-600 flex items-center justify-center shrink-0 animate-pulse" />
+            <div className="rounded-2xl px-4 py-3 bg-slate-700/80 text-slate-400 text-sm">
+              Thinking…
             </div>
           </div>
         )}
+        <div ref={bottomRef} />
       </div>
 
-      {/* User Profile Panel - only for real chats, not assistant */}
-      {showProfilePanel && selectedChat && selectedChat !== ASSISTANT_CHAT_ID && (
-        <UserProfilePanel 
-          chatId={selectedChat}
-          userId={user?.id}
-          onClose={() => setShowProfilePanel(false)}
-        />
+      {error && (
+        <p className="px-4 py-2 text-red-400 text-sm text-center">{error}</p>
       )}
+
+      <div className="p-4 border-t border-slate-700 shrink-0">
+        <div className="flex items-center gap-2 rounded-2xl bg-slate-800 border border-slate-700 px-3 py-2">
+          <VoiceRecorder
+            onRecordingComplete={handleVoiceComplete}
+            disabled={loading}
+          />
+          <input
+            type="text"
+            placeholder="Message or prompt… Use @diffussion-photo or @diffussion-video"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send()}
+            className="flex-1 bg-transparent text-white placeholder-slate-500 focus:outline-none text-sm py-2"
+          />
+          <button
+            type="button"
+            onClick={send}
+            disabled={loading || !input.trim()}
+            className="w-9 h-9 rounded-full bg-blue-600 hover:bg-blue-500 flex items-center justify-center text-white disabled:opacity-50"
+            aria-label="Send"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+            </svg>
+          </button>
+        </div>
+      </div>
     </div>
-  )
+  );
 }
